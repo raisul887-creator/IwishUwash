@@ -7,6 +7,7 @@ import {
   ComplaintSeverity,
   ComplaintStatus,
   Membership,
+  MembershipStatus,
   MembershipTier,
   PriorityLevel,
   ServicePackage,
@@ -17,6 +18,7 @@ import {
   getInitialMemberships,
   getInitialPackages,
 } from '../data/seedData';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 const STORAGE_KEY = 'carakate_banda_aceh_v1';
 
@@ -72,6 +74,8 @@ interface CarakateContextValue {
   memberships: Membership[];
   bookings: Booking[];
   complaints: Complaint[];
+  isSupabaseConnected: boolean;
+  isSyncing: boolean;
 
   // Membership CRUD
   findMembership: (query: string) => Membership | undefined;
@@ -133,6 +137,206 @@ const CarakateContext = createContext<CarakateContextValue | undefined>(
   undefined
 );
 
+// ==================== DB ROW MAPPERS ====================
+type DbPackageRow = {
+  id: string;
+  name: string;
+  price_monthly: number;
+  exterior_quota: string;
+  has_priority_queue: boolean;
+  priority_level: PriorityLevel;
+  has_interior_vacuum: boolean;
+  detailing_per_month: number;
+  description: string;
+  badge_color: string;
+  is_active: boolean;
+};
+
+type DbMembershipRow = {
+  id: string;
+  member_code: string;
+  full_name: string;
+  phone: string;
+  email: string;
+  vehicle_plate: string;
+  vehicle_model: string;
+  tier: MembershipTier;
+  monthly_quota: number;
+  remaining_quota: number;
+  loyalty_points: number;
+  status: MembershipStatus;
+  start_date: string;
+  end_date: string;
+};
+
+type DbBookingRow = {
+  id: string;
+  booking_code: string;
+  member_id: string | null;
+  customer_name: string;
+  phone: string;
+  vehicle_plate: string;
+  vehicle_model: string;
+  service_type: string;
+  booking_date: string;
+  time_slot: string;
+  queue_priority: PriorityLevel;
+  status: BookingStatus;
+  notes: string | null;
+  quota_deducted: boolean;
+  created_at: string;
+};
+
+type DbComplaintRow = {
+  id: string;
+  ticket_code: string;
+  booking_code: string | null;
+  member_code: string | null;
+  customer_name: string;
+  phone: string;
+  category: ComplaintCategory;
+  severity: ComplaintSeverity;
+  description: string;
+  photo_data_url: string | null;
+  status: ComplaintStatus;
+  admin_resolution: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+const toPackageModel = (r: DbPackageRow): ServicePackage => ({
+  id: r.id,
+  name: r.name,
+  priceMonthly: r.price_monthly,
+  exteriorQuota:
+    r.exterior_quota === 'UNLIMITED' ? 'UNLIMITED' : Number(r.exterior_quota),
+  hasPriorityQueue: r.has_priority_queue,
+  priorityLevel: r.priority_level,
+  hasInteriorVacuum: r.has_interior_vacuum,
+  detailingPerMonth: r.detailing_per_month,
+  description: r.description,
+  badgeColor: r.badge_color,
+  isActive: r.is_active,
+});
+
+const toPackageRow = (p: ServicePackage): DbPackageRow => ({
+  id: p.id,
+  name: p.name,
+  price_monthly: p.priceMonthly,
+  exterior_quota: String(p.exteriorQuota),
+  has_priority_queue: p.hasPriorityQueue,
+  priority_level: p.priorityLevel,
+  has_interior_vacuum: p.hasInteriorVacuum,
+  detailing_per_month: p.detailingPerMonth,
+  description: p.description,
+  badge_color: p.badgeColor,
+  is_active: p.isActive,
+});
+
+const toMembershipModel = (r: DbMembershipRow): Membership => ({
+  id: r.id,
+  memberCode: r.member_code,
+  fullName: r.full_name,
+  phone: r.phone,
+  email: r.email,
+  vehiclePlate: r.vehicle_plate,
+  vehicleModel: r.vehicle_model,
+  tier: r.tier,
+  monthlyQuota: r.monthly_quota,
+  remainingQuota: r.remaining_quota,
+  loyaltyPoints: r.loyalty_points,
+  status: r.status,
+  startDate: r.start_date,
+  endDate: r.end_date,
+});
+
+const toMembershipRow = (m: Membership): DbMembershipRow => ({
+  id: m.id,
+  member_code: m.memberCode,
+  full_name: m.fullName,
+  phone: m.phone,
+  email: m.email,
+  vehicle_plate: m.vehiclePlate,
+  vehicle_model: m.vehicleModel,
+  tier: m.tier,
+  monthly_quota: m.monthlyQuota,
+  remaining_quota: m.remainingQuota,
+  loyalty_points: m.loyaltyPoints,
+  status: m.status,
+  start_date: m.startDate,
+  end_date: m.endDate,
+});
+
+const toBookingModel = (r: DbBookingRow): Booking => ({
+  id: r.id,
+  bookingCode: r.booking_code,
+  memberId: r.member_id ?? undefined,
+  customerName: r.customer_name,
+  phone: r.phone,
+  vehiclePlate: r.vehicle_plate,
+  vehicleModel: r.vehicle_model,
+  serviceType: r.service_type,
+  bookingDate: r.booking_date,
+  timeSlot: r.time_slot,
+  queuePriority: r.queue_priority,
+  status: r.status,
+  notes: r.notes ?? undefined,
+  quotaDeducted: r.quota_deducted,
+  createdAt: r.created_at,
+});
+
+const toBookingRow = (b: Booking): DbBookingRow => ({
+  id: b.id,
+  booking_code: b.bookingCode,
+  member_id: b.memberId ?? null,
+  customer_name: b.customerName,
+  phone: b.phone,
+  vehicle_plate: b.vehiclePlate,
+  vehicle_model: b.vehicleModel,
+  service_type: b.serviceType,
+  booking_date: b.bookingDate,
+  time_slot: b.timeSlot,
+  queue_priority: b.queuePriority,
+  status: b.status,
+  notes: b.notes ?? null,
+  quota_deducted: Boolean(b.quotaDeducted),
+  created_at: b.createdAt,
+});
+
+const toComplaintModel = (r: DbComplaintRow): Complaint => ({
+  id: r.id,
+  ticketCode: r.ticket_code,
+  bookingCode: r.booking_code ?? undefined,
+  memberCode: r.member_code ?? undefined,
+  customerName: r.customer_name,
+  phone: r.phone,
+  category: r.category,
+  severity: r.severity,
+  description: r.description,
+  photoDataUrl: r.photo_data_url ?? undefined,
+  status: r.status,
+  adminResolution: r.admin_resolution ?? undefined,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+const toComplaintRow = (c: Complaint): DbComplaintRow => ({
+  id: c.id,
+  ticket_code: c.ticketCode,
+  booking_code: c.bookingCode ?? null,
+  member_code: c.memberCode ?? null,
+  customer_name: c.customerName,
+  phone: c.phone,
+  category: c.category,
+  severity: c.severity,
+  description: c.description,
+  photo_data_url: c.photoDataUrl ?? null,
+  status: c.status,
+  admin_resolution: c.adminResolution ?? null,
+  created_at: c.createdAt,
+  updated_at: c.updatedAt,
+});
+
 function loadInitialState(): StoredState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -189,7 +393,10 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [state, setState] = useState<StoredState>(() => loadInitialState());
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(isSupabaseConfigured);
 
+  // Cache state in localStorage as offline backup
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -197,6 +404,77 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       // Ignore storage quota errors
     }
   }, [state]);
+
+  // Initial fetch from Supabase on mount
+  useEffect(() => {
+    if (!supabase) {
+      setIsSyncing(false);
+      return;
+    }
+
+    const client = supabase;
+    let cancelled = false;
+    const syncFromSupabase = async () => {
+      try {
+        const [pkgRes, memRes, bkRes, cmpRes] = await Promise.all([
+          client
+            .from('service_packages')
+            .select('*')
+            .order('price_monthly', { ascending: true }),
+          client
+            .from('memberships')
+            .select('*')
+            .order('created_at', { ascending: false }),
+          client
+            .from('bookings')
+            .select('*')
+            .order('created_at', { ascending: false }),
+          client
+            .from('complaints')
+            .select('*')
+            .order('created_at', { ascending: false }),
+        ]);
+
+        if (pkgRes.error || memRes.error || bkRes.error || cmpRes.error) {
+          console.error('Supabase sync error:', {
+            pkg: pkgRes.error,
+            mem: memRes.error,
+            bk: bkRes.error,
+            cmp: cmpRes.error,
+          });
+          if (!cancelled) {
+            setIsSupabaseConnected(false);
+            setIsSyncing(false);
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setState({
+            packages: (pkgRes.data as DbPackageRow[]).map(toPackageModel),
+            memberships: (memRes.data as DbMembershipRow[]).map(
+              toMembershipModel
+            ),
+            bookings: (bkRes.data as DbBookingRow[]).map(toBookingModel),
+            complaints: (cmpRes.data as DbComplaintRow[]).map(toComplaintModel),
+          });
+          setIsSupabaseConnected(true);
+          setIsSyncing(false);
+        }
+      } catch (err) {
+        console.error('Supabase fetch failed:', err);
+        if (!cancelled) {
+          setIsSupabaseConnected(false);
+          setIsSyncing(false);
+        }
+      }
+    };
+
+    syncFromSupabase();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const { packages, memberships, bookings, complaints } = state;
 
@@ -265,6 +543,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       memberships: [newMember, ...prev.memberships],
     }));
 
+    if (supabase) {
+      void supabase
+        .from('memberships')
+        .insert(toMembershipRow(newMember))
+        .then(({ error }) => {
+          if (error) console.error('Supabase insert membership error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Selamat bergabung! Member ${memberCode} aktif selama 30 hari (+50 poin awal).`,
@@ -291,6 +578,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       memberships: prev.memberships.map((m) => (m.id === id ? updated : m)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('memberships')
+        .upsert(toMembershipRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase update membership error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Data member ${updated.memberCode} berhasil diperbarui.`,
@@ -323,6 +620,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       memberships: prev.memberships.map((m) => (m.id === id ? updated : m)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('memberships')
+        .upsert(toMembershipRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase renew membership error:', error);
+        });
+    }
 
     return {
       ok: true,
@@ -360,6 +666,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       memberships: prev.memberships.map((m) => (m.id === id ? updated : m)),
     }));
 
+    if (supabase) {
+      void supabase
+        .from('memberships')
+        .upsert(toMembershipRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase upgrade membership error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Paket ${updated.memberCode} berhasil diubah ke ${newTier} (+30 Poin Bonus)!`,
@@ -376,6 +691,17 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       memberships: prev.memberships.filter((m) => m.id !== id),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('memberships')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.error('Supabase delete membership error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Data member ${target.memberCode} telah dihapus.`,
@@ -471,6 +797,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       bookings: [newBooking, ...prev.bookings],
     }));
 
+    if (supabase) {
+      void supabase
+        .from('bookings')
+        .insert(toBookingRow(newBooking))
+        .then(({ error }) => {
+          if (error) console.error('Supabase insert booking error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Booking ${bookingCode} berhasil dibuat untuk ${newBooking.bookingDate} jam ${newBooking.timeSlot}!`,
@@ -497,6 +832,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       bookings: prev.bookings.map((b) => (b.id === id ? updated : b)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('bookings')
+        .upsert(toBookingRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase update booking error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Booking ${updated.bookingCode} berhasil diperbarui.`,
@@ -516,53 +861,50 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
     let quotaNote = '';
     let nextQuotaDeducted = Boolean(target.quotaDeducted);
     let updatedMemberships = memberships;
+    let changedMember: Membership | null = null;
 
     if (target.memberId) {
       const member = memberships.find((m) => m.id === target.memberId);
       if (member) {
         const isLimitedQuota = member.tier !== 'GOLD';
 
-        // Deduct quota when moving to COMPLETED for limited-quota members
-        if (
-          newStatus === 'COMPLETED' &&
-          !nextQuotaDeducted &&
-          isLimitedQuota
-        ) {
+        if (newStatus === 'COMPLETED' && !nextQuotaDeducted && isLimitedQuota) {
           const newRemaining = Math.max(0, member.remainingQuota - 1);
+          changedMember = {
+            ...member,
+            remainingQuota: newRemaining,
+            loyaltyPoints: member.loyaltyPoints + 15,
+          };
           updatedMemberships = memberships.map((m) =>
-            m.id === member.id
-              ? {
-                  ...m,
-                  remainingQuota: newRemaining,
-                  loyaltyPoints: m.loyaltyPoints + 15,
-                }
-              : m
+            m.id === member.id ? changedMember! : m
           );
           nextQuotaDeducted = true;
           quotaNote = ` Kuota ${member.memberCode} terpotong 1 (sisa ${newRemaining}) & +15 Poin.`;
-        } else if (newStatus === 'COMPLETED' && !isLimitedQuota) {
-          // Gold member gets loyalty points on completion without limited-quota penalty
+        } else if (
+          newStatus === 'COMPLETED' &&
+          !nextQuotaDeducted &&
+          !isLimitedQuota
+        ) {
+          changedMember = {
+            ...member,
+            remainingQuota: Math.max(0, member.remainingQuota - 1),
+            loyaltyPoints: member.loyaltyPoints + 20,
+          };
           updatedMemberships = memberships.map((m) =>
-            m.id === member.id
-              ? {
-                  ...m,
-                  remainingQuota: Math.max(0, m.remainingQuota - 1),
-                  loyaltyPoints: m.loyaltyPoints + 20,
-                }
-              : m
+            m.id === member.id ? changedMember! : m
           );
           nextQuotaDeducted = true;
           quotaNote = ` Slot harian Gold tercatat & +20 Poin Loyalitas ditambahkan.`;
         }
 
-        // Refund quota if cancelled (or reverted) after previously deducted
         if (newStatus === 'CANCELLED' && nextQuotaDeducted) {
           const refunded = Math.min(
             member.monthlyQuota,
             member.remainingQuota + 1
           );
+          changedMember = { ...member, remainingQuota: refunded };
           updatedMemberships = memberships.map((m) =>
-            m.id === member.id ? { ...m, remainingQuota: refunded } : m
+            m.id === member.id ? changedMember! : m
           );
           nextQuotaDeducted = false;
           quotaNote = ` Kuota ${member.memberCode} dikembalikan (+1, sisa ${refunded}).`;
@@ -581,6 +923,23 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       memberships: updatedMemberships,
       bookings: prev.bookings.map((b) => (b.id === id ? updatedBooking : b)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('bookings')
+        .upsert(toBookingRow(updatedBooking))
+        .then(({ error }) => {
+          if (error) console.error('Supabase booking status error:', error);
+        });
+      if (changedMember) {
+        void supabase
+          .from('memberships')
+          .upsert(toMembershipRow(changedMember))
+          .then(({ error }) => {
+            if (error) console.error('Supabase member quota sync error:', error);
+          });
+      }
+    }
 
     return {
       ok: true,
@@ -606,7 +965,6 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       };
     }
 
-    // Check Gold 1x/day rule if date changed
     if (target.memberId && target.bookingDate !== bookingDate) {
       const member = memberships.find((m) => m.id === target.memberId);
       if (member && member.tier === 'GOLD') {
@@ -631,6 +989,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       bookings: prev.bookings.map((b) => (b.id === id ? updated : b)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('bookings')
+        .upsert(toBookingRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase reschedule error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Booking ${updated.bookingCode} dijadwalkan ulang ke ${bookingDate} pukul ${timeSlot}.`,
@@ -662,6 +1030,17 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       bookings: prev.bookings.filter((b) => b.id !== id),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('bookings')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.error('Supabase delete booking error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Booking ${target.bookingCode} berhasil dihapus.`,
@@ -702,6 +1081,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       complaints: [newComplaint, ...prev.complaints],
     }));
 
+    if (supabase) {
+      void supabase
+        .from('complaints')
+        .insert(toComplaintRow(newComplaint))
+        .then(({ error }) => {
+          if (error) console.error('Supabase insert complaint error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Tiket komplain ${ticketCode} berhasil dibuat. Tim kami akan segera menindaklanjuti.`,
@@ -726,6 +1114,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       complaints: prev.complaints.map((c) => (c.id === id ? updated : c)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('complaints')
+        .upsert(toComplaintRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase update complaint error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Tiket ${updated.ticketCode} berhasil diperbarui.`,
@@ -770,6 +1168,15 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       complaints: prev.complaints.map((c) => (c.id === id ? updated : c)),
     }));
 
+    if (supabase) {
+      void supabase
+        .from('complaints')
+        .upsert(toComplaintRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase complaint status error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Status tiket ${updated.ticketCode} diperbarui menjadi ${status}.`,
@@ -786,6 +1193,17 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       complaints: prev.complaints.filter((c) => c.id !== id),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('complaints')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.error('Supabase delete complaint error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Tiket komplain ${target.ticketCode} telah dihapus.`,
@@ -806,6 +1224,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       packages: [...prev.packages, newPkg],
     }));
+
+    if (supabase) {
+      void supabase
+        .from('service_packages')
+        .insert(toPackageRow(newPkg))
+        .then(({ error }) => {
+          if (error) console.error('Supabase insert package error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Paket layanan "${newPkg.name}" berhasil ditambahkan.`,
@@ -826,6 +1254,16 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       packages: prev.packages.map((p) => (p.id === id ? updated : p)),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('service_packages')
+        .upsert(toPackageRow(updated))
+        .then(({ error }) => {
+          if (error) console.error('Supabase update package error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Paket "${updated.name}" berhasil diperbarui.`,
@@ -842,6 +1280,17 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       packages: prev.packages.filter((p) => p.id !== id),
     }));
+
+    if (supabase) {
+      void supabase
+        .from('service_packages')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.error('Supabase delete package error:', error);
+        });
+    }
+
     return {
       ok: true,
       message: `Paket "${target.name}" berhasil dihapus.`,
@@ -861,6 +1310,33 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch {
       // ignore
     }
+
+    if (supabase) {
+      const client = supabase;
+      void (async () => {
+        try {
+          await client.from('bookings').delete().neq('id', '');
+          await client.from('complaints').delete().neq('id', '');
+          await client.from('memberships').delete().neq('id', '');
+          await client.from('service_packages').delete().neq('id', '');
+
+          await client
+            .from('service_packages')
+            .insert(fresh.packages.map(toPackageRow));
+          await client
+            .from('memberships')
+            .insert(fresh.memberships.map(toMembershipRow));
+          await client
+            .from('bookings')
+            .insert(fresh.bookings.map(toBookingRow));
+          await client
+            .from('complaints')
+            .insert(fresh.complaints.map(toComplaintRow));
+        } catch (err) {
+          console.error('Supabase reset demo error:', err);
+        }
+      })();
+    }
   };
 
   return (
@@ -870,6 +1346,8 @@ export const CarakateProvider: React.FC<{ children: React.ReactNode }> = ({
         memberships,
         bookings,
         complaints,
+        isSupabaseConnected,
+        isSyncing,
         findMembership,
         createMembership,
         updateMembership,

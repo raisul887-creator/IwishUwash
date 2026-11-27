@@ -61,6 +61,8 @@ export const AdminPage: React.FC = () => {
     memberships,
     bookings,
     complaints,
+    isSupabaseConnected,
+    isSyncing,
     createBooking,
     updateBooking,
     updateBookingStatus,
@@ -502,14 +504,41 @@ export const AdminPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleResetDemo}
-          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white px-4 py-2.5 text-xs sm:text-sm font-semibold shadow-sm transition-colors w-fit"
-        >
-          <RotateCcw className="h-4 w-4 text-amber-400" />
-          Reset Data Demo
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold border ${
+              isSyncing
+                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                : isSupabaseConnected
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-slate-100 text-slate-600 border-slate-200'
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                isSyncing
+                  ? 'bg-amber-500 animate-pulse'
+                  : isSupabaseConnected
+                  ? 'bg-emerald-500'
+                  : 'bg-slate-400'
+              }`}
+            />
+            {isSyncing
+              ? 'Menghubungkan Supabase...'
+              : isSupabaseConnected
+              ? 'Supabase Connected'
+              : 'Mode Lokal (localStorage)'}
+          </span>
+
+          <button
+            type="button"
+            onClick={handleResetDemo}
+            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white px-4 py-2.5 text-xs sm:text-sm font-semibold shadow-sm transition-colors w-fit"
+          >
+            <RotateCcw className="h-4 w-4 text-amber-400" />
+            Reset Data Demo
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards */}
